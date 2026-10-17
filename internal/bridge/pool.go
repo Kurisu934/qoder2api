@@ -45,10 +45,11 @@ type Slot struct {
 	cooldownUntil time.Time
 	lastErr       string
 
-	// 该账号所在区域的可用模型目录缓存（用于按模型路由到正确区域）。
-	catalogMu sync.Mutex
-	catalog   map[string]bool
-	catalogAt time.Time
+	// Full per-account catalog shared by public listing, resolution and routing.
+	catalogMu  sync.Mutex
+	catalog    []QoderModel
+	catalogAt  time.Time
+	catalogErr error
 }
 
 // NewSlot 组装一个池内账号。

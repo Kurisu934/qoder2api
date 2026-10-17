@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"fmt"
 	"time"
 
 	"qoder2api/account"
@@ -35,7 +36,12 @@ func (b *Bridge) candidateSlots() []*Slot {
 	if b.sess == nil || b.client == nil {
 		return nil
 	}
-	return []*Slot{{ID: "default", Name: "default", Region: b.region, sess: b.sess, client: b.client}}
+	b.singleSlotMu.Lock()
+	defer b.singleSlotMu.Unlock()
+	if b.singleSlot == nil {
+		b.singleSlot = NewSlot("default", "default", b.region, b.sess, b.client)
+	}
+	return []*Slot{b.singleSlot}
 }
 
 // pickSlot 选一个账号，跳过 exclude 与冷却中的账号。
@@ -67,32 +73,25 @@ func (b *Bridge) noteSlotSuccess(id string) {
 	}
 }
 
-// --- 按模型区域路由 ---------------------------------------------------------
-// 混合国内/国际账号时，区域独占模型只能由对应区域的账号提供。这里缓存每个
-// 账号所在区域的模型目录，选号时优先选「目录里有该模型」的账号；目录未知或
-// 拉取失败则不参与过滤（保持宽松，避免误伤）。
-
+// Catalog caches are scoped to an account and its region. A failed refresh is
+// cached for the existing TTL and never replaced by fabricated model entries.
 const modelCatalogTTL = 30 * time.Minute
 
-// ensureCatalog 确保账号的模型目录缓存新鲜。失败也记时间戳，避免每请求重试。
-func (b *Bridge) ensureCatalog(slot *Slot) {
+func (b *Bridge) ensureCatalog(slot *Slot) error {
 	slot.catalogMu.Lock()
-	fresh := !slot.catalogAt.IsZero() && time.Since(slot.catalogAt) < modelCatalogTTL
-	slot.catalogMu.Unlock()
-	if fresh {
-		return
+	defer slot.catalogMu.Unlock()
+	if !slot.catalogAt.IsZero() && time.Since(slot.catalogAt) < modelCatalogTTL {
+		return slot.catalogErr
 	}
+	// Serialize refreshes on this account so concurrent inference/list calls share
+	// the same request rather than starting duplicate signed catalog fetches.
 	models, err := b.fetchSlotModels(slot)
-	slot.catalogMu.Lock()
 	slot.catalogAt = time.Now()
-	if err == nil && len(models) > 0 {
-		set := make(map[string]bool, len(models))
-		for _, m := range models {
-			set[m.Key] = true
-		}
-		slot.catalog = set
+	slot.catalogErr = err
+	if err == nil {
+		slot.catalog = models
 	}
-	slot.catalogMu.Unlock()
+	return err
 }
 
 func (b *Bridge) fetchSlotModels(slot *Slot) ([]QoderModel, error) {
@@ -100,7 +99,11 @@ func (b *Bridge) fetchSlotModels(slot *Slot) ([]QoderModel, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseQoderModels(resp), nil
+	models := parseQoderModels(resp)
+	if len(models) == 0 {
+		return nil, fmt.Errorf("empty upstream model catalog for region %s", slot.Region)
+	}
+	return models, nil
 }
 
 // slotSupportsModel 该账号能否提供此模型；目录未知时返回 true（不过滤）。
@@ -110,24 +113,18 @@ func (b *Bridge) slotSupportsModel(slot *Slot, model string) bool {
 	if slot.catalog == nil {
 		return true
 	}
-	return slot.catalog[model]
+	for _, candidate := range slot.catalog {
+		if candidate.Key == model && candidate.Enable && candidate.DisplayName != "" {
+			return true
+		}
+	}
+	return false
 }
 
-// pickSlotForModel 按模型选号：优先选目录里有该模型的同 region 账号。
-// 兜底同样限定同 region——跨 region 会把请求派给别区账号并扣其 credits
-// （实测 8963 曾把 CN 请求派给 global 账号产生扣费）。
+// pickSlotForModel selects only same-region accounts whose known catalog allows
+// this exact SKU. Never fall back to an account known not to support the model.
 func (b *Bridge) pickSlotForModel(model string, exclude map[string]struct{}) (*Slot, bool) {
-	// 本桥期望的区域：Bridge.region（单账号模式天然有值）；
-	// 池模式若 region 为空则回退到池内首个 slot。
-	wantRegion := b.region
-	if wantRegion == "" && b.pool != nil {
-		b.pool.mu.Lock()
-		for _, s := range b.pool.slots {
-			wantRegion = s.Region
-			break
-		}
-		b.pool.mu.Unlock()
-	}
+	wantRegion := b.modelRegion()
 	// 防御性过滤：即使池被误构建为跨区，也不选别区账号
 	// （跨区会扣到用户根本没启动的那侧账号的 credits）。
 	sameRegion := func(s *Slot) bool { return wantRegion == "" || s.Region == wantRegion }
@@ -135,16 +132,11 @@ func (b *Bridge) pickSlotForModel(model string, exclude map[string]struct{}) (*S
 	if b.pool == nil {
 		return b.pickSlot(exclude)
 	}
-	slot, ok := b.pool.Pick(exclude, func(s *Slot) bool {
+	return b.pool.Pick(exclude, func(s *Slot) bool {
 		if !sameRegion(s) {
 			return false
 		}
 		b.ensureCatalog(s)
 		return b.slotSupportsModel(s, model)
 	})
-	if ok {
-		return slot, true
-	}
-	// 池内同 region 账号目录均不含该模型：仍在同 region 内兜底。
-	return b.pool.Pick(exclude, sameRegion)
 }

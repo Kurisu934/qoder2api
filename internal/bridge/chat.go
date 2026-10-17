@@ -34,10 +34,21 @@ func (b *Bridge) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stream, _ := req["stream"].(bool)
-	model := StrValDefault(req, "model", "auto")
+	model := StrValDefault(req, "model", "Auto")
 	incomingMsgs, _ := req["messages"].([]interface{})
 	tools := req["tools"]
 	toolsEnabled := tools != nil
+	opts, err := ParseCallOpts(req, "chat")
+	if err != nil {
+		WriteErr(w, err)
+		return
+	}
+	opts.model, err = b.resolveModel("codex", model)
+	if err != nil {
+		WriteErr(w, err)
+		return
+	}
+	model = opts.model.DisplayName
 
 	logger.Info("[Chat][%s] model=%s stream=%v tools=%v msgs=%d", reqID, model, stream, toolsEnabled, len(incomingMsgs))
 
@@ -58,7 +69,7 @@ func (b *Bridge) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		var toolCallBuf []interface{}
 		var totalInputTokens, totalOutputTokens int
 
-		err = b.CallQoder(ctx, InferAgent(model), messages, model, tools, func(d Delta) {
+		err = b.CallQoderWithOpts(ctx, "codex", messages, model, tools, opts, func(d Delta) {
 			if d.Err != nil {
 				logger.Error("[Chat][%s] upstream error in stream callback: %v", reqID, d.Err)
 				return
@@ -73,6 +84,9 @@ func (b *Bridge) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			if d.Content != "" {
 				delta["role"] = "assistant"
 				delta["content"] = d.Content
+			}
+			if d.Reasoning != "" {
+				delta["reasoning_content"] = d.Reasoning
 			}
 			if d.ToolCalls != nil {
 				delta["tool_calls"] = d.ToolCalls
@@ -124,15 +138,19 @@ func (b *Bridge) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		logger.Info("[Chat][%s] stream 完成 finish=%s tool_calls=%d 耗时=%dms", reqID, finishReason, len(toolCallBuf), time.Since(startTime).Milliseconds())
 	} else {
 		var full strings.Builder
+		var reasoning strings.Builder
 		var toolCallBuf []interface{}
 		var totalInputTokens, totalOutputTokens int
-		err = b.CallQoder(ctx, InferAgent(model), messages, model, tools, func(d Delta) {
+		err = b.CallQoderWithOpts(ctx, "codex", messages, model, tools, opts, func(d Delta) {
 			if d.InputTokens > 0 || d.OutputTokens > 0 {
 				totalInputTokens = d.InputTokens
 				totalOutputTokens = d.OutputTokens
 			}
 			if d.Content != "" {
 				full.WriteString(d.Content)
+			}
+			if d.Reasoning != "" {
+				reasoning.WriteString(d.Reasoning)
 			}
 			if d.ToolCalls != nil {
 				toolCallBuf = append(toolCallBuf, d.ToolCalls...)
@@ -145,6 +163,9 @@ func (b *Bridge) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		finishReason := "stop"
 		msg := map[string]interface{}{"role": "assistant", "content": full.String()}
+		if reasoning.Len() > 0 {
+			msg["reasoning_content"] = reasoning.String()
+		}
 		if len(toolCallBuf) > 0 {
 			finishReason = "tool_calls"
 			msg["tool_calls"] = toolCallBuf

@@ -34,7 +34,7 @@ func (b *Bridge) HandleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stream, _ := req["stream"].(bool)
-	model := StrValDefault(req, "model", "auto")
+	model := StrValDefault(req, "model", "Auto")
 	incomingMsgs, _ := req["messages"].([]interface{})
 
 	// Claude format: tools use name+input_schema directly
@@ -69,16 +69,17 @@ func (b *Bridge) HandleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 	prompt := ExtractLatestUserPrompt(incomingMsgs)
 	messages := BuildQoderMessages(b.templateMessages(), incomingMsgs, prompt, toolsEnabled)
 
-	// 解析 thinking 参数和 max_tokens
-	opts := CallOpts{}
-	if thinking, ok := req["thinking"].(map[string]interface{}); ok {
-		if tp, _ := thinking["type"].(string); tp == "enabled" {
-			opts.IsReasoning = true
-		}
+	opts, err := ParseCallOpts(req, "claude")
+	if err != nil {
+		WriteClaudeErr(w, err)
+		return
 	}
-	if mt, ok := req["max_tokens"].(float64); ok && int(mt) > 0 {
-		opts.MaxTokens = int(mt)
+	opts.model, err = b.resolveModel("claude", model)
+	if err != nil {
+		WriteClaudeErr(w, err)
+		return
 	}
+	model = opts.model.DisplayName
 
 	logger.Info("[Claude][%s] model=%s stream=%v tools=%v thinking=%v max_tokens=%d msgs=%d", reqID, model, stream, toolsEnabled, opts.IsReasoning, opts.MaxTokens, len(incomingMsgs))
 
@@ -133,7 +134,7 @@ func (b *Bridge) HandleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 				totalInputTokens = d.InputTokens
 				totalOutputTokens = d.OutputTokens
 			}
-			if d.Reasoning != "" && opts.IsReasoning {
+			if d.Reasoning != "" {
 				if !thinkingBlockOpen {
 					// 先关闭默认的 text block，再开 thinking block
 					writeSse("content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": contentBlockIndex})
@@ -267,7 +268,7 @@ func (b *Bridge) HandleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 		}
 
 		content := []interface{}{}
-		if reasoningBuf.Len() > 0 && opts.IsReasoning {
+		if reasoningBuf.Len() > 0 {
 			content = append(content, map[string]interface{}{"type": "thinking", "thinking": reasoningBuf.String()})
 		}
 		if full.Len() > 0 {
@@ -317,50 +318,29 @@ func (b *Bridge) HandleClaudeMessages(w http.ResponseWriter, r *http.Request) {
 func (b *Bridge) HandleListModels(w http.ResponseWriter, r *http.Request) {
 	models, err := b.ListAvailableModels()
 	if err != nil {
-		logger.Error("[models] listAvailableModels failed: %v, using fallback", err)
-		models = nil
+		WriteErr(w, err)
+		return
 	}
-	const fallbackContextWindow = 180000
-	const defaultMaxOutputTokens = 16384
 	data := make([]interface{}, 0, len(models))
 	for _, m := range models {
-		ctxWin := m.ContextWindow
-		if ctxWin == 0 {
-			ctxWin = m.MaxInputTokens
-		}
-		if ctxWin == 0 {
-			ctxWin = fallbackContextWindow
-		}
-		maxOut := defaultMaxOutputTokens
-		if m.IsReasoning {
-			maxOut = 32768
-		}
 		entry := map[string]interface{}{
-			"id":                m.Key,
-			"object":            "model",
-			"created":           1687864820,
-			"owned_by":          "qoder",
-			"display_name":      m.DisplayName,
-			"context_window":    ctxWin,
-			"max_output_tokens": maxOut,
-			"enable":            m.Enable,
-			"is_default":        m.IsDefault,
-			"is_reasoning":      m.IsReasoning,
-			"price_factor":      m.PriceFactor,
+			"id": m.DisplayName, "object": "model", "owned_by": "qoder",
+			"display_name": m.DisplayName, "enable": m.Enable,
+			"is_default": m.IsDefault, "price_factor": m.PriceFactor,
+			"is_reasoning":       m.SupportsReasoning,
+			"supports_reasoning": m.SupportsReasoning,
+			"default_reasoning":  m.IsReasoning,
+		}
+		if m.ContextWindow > 0 {
+			entry["context_window"] = m.ContextWindow
+		}
+		if m.MaxInputTokens > 0 {
+			entry["max_input_tokens"] = m.MaxInputTokens
+		}
+		if m.MaxOutputTokens > 0 {
+			entry["max_output_tokens"] = m.MaxOutputTokens
 		}
 		data = append(data, entry)
-	}
-	if len(data) == 0 {
-		for _, key := range []string{"auto", "qmodel_38max", "qfmodel", "qmodel_latest", "qmodel", "q37fmodel", "dmodel", "dfmodel", "gmodel", "gfmodel", "gm51model", "kmodel_latest", "kmodel", "mmodel"} {
-			data = append(data, map[string]interface{}{
-				"id":             key,
-				"object":         "model",
-				"created":        1687864820,
-				"owned_by":       "qoder",
-				"display_name":   key,
-				"context_window": fallbackContextWindow,
-			})
-		}
 	}
 	WriteJSON(w, map[string]interface{}{"object": "list", "data": data})
 }

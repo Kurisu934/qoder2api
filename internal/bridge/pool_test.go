@@ -24,7 +24,10 @@ func testSlot(t *testing.T, id, userType string) *Slot {
 	if err != nil {
 		t.Fatalf("NewSession(%s): %v", id, err)
 	}
-	return NewSlot(id, id, account.RegionCN, sess, NewBearerClient(sess))
+	slot := NewSlot(id, id, account.RegionCN, sess, NewBearerClient(sess))
+	slot.catalog = []QoderModel{{Key: "auto", DisplayName: "Auto", Enable: true, IsDefault: true}}
+	slot.catalogAt = time.Now()
+	return slot
 }
 
 func TestPoolPickSkipsCooling(t *testing.T) {
@@ -233,10 +236,16 @@ func TestCooldownForRetryAfterSeconds(t *testing.T) {
 
 func TestPickSlotForModelRoutesByRegion(t *testing.T) {
 	cn := testSlot(t, "cn-slot", "t")
-	cn.catalog = map[string]bool{"gmodel": true, "qfmodel": true}
+	cn.catalog = []QoderModel{
+		{Key: "gmodel", DisplayName: "Gemini", Enable: true},
+		{Key: "qfmodel", DisplayName: "Fast", Enable: true},
+	}
 	cn.catalogAt = time.Now()
 	gl := testSlot(t, "global-slot", "t")
-	gl.catalog = map[string]bool{"qfmodel": true, "ultimate": true}
+	gl.catalog = []QoderModel{
+		{Key: "qfmodel", DisplayName: "Fast", Enable: true},
+		{Key: "ultimate", DisplayName: "Ultimate", Enable: true},
+	}
 	gl.catalogAt = time.Now()
 
 	br := NewPoolBridge(NewPool(cn, gl), nil)
@@ -264,8 +273,8 @@ func TestPickSlotForModelRoutesByRegion(t *testing.T) {
 		t.Fatalf("qfmodel should rotate across both regions, seen=%v", seen)
 	}
 
-	// 谁都不认识的模型 → 兜底任意可用账号
-	if s, ok := br.pickSlotForModel("nobody-has-this", nil); !ok || s == nil {
-		t.Fatalf("unknown model should fall back to any slot, got %v", s)
+	// No account advertises the SKU: do not silently route to another model.
+	if s, ok := br.pickSlotForModel("nobody-has-this", nil); ok || s != nil {
+		t.Fatalf("unknown model should not route to an account, got %v", s)
 	}
 }

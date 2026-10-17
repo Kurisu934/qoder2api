@@ -366,7 +366,7 @@
         type: 'openai',
         base_url: openai,
         api_key: key,
-        models: ['auto', 'qmodel_38max', 'qfmodel', 'qmodel_latest', 'qmodel', 'q37fmodel', 'dmodel', 'dfmodel', 'gmodel', 'gfmodel', 'gm51model', 'kmodel_latest', 'kmodel', 'mmodel'],
+        models: [],
       };
       $('newapiBox').textContent = JSON.stringify(cfg, null, 2);
     }
@@ -435,8 +435,8 @@
       const rows = models.map(m => {
         const ctx = (m.max_input_tokens || m.context_window) != null ? Number(m.max_input_tokens || m.context_window).toLocaleString() : '-';
         const maxOut = m.max_output_tokens != null ? Number(m.max_output_tokens).toLocaleString() : '-';
-        const name = m.display_name || m.id || m.key || '-';
-        const key = m.id || m.key || '-';
+        const name = m.display_name || m.id || '-';
+        const key = m.id || '-';
         return `<tr>
           <td>${name}</td>
           <td>${key}</td>
@@ -604,6 +604,9 @@
         const res = await api('/api/models');
         const models = Array.isArray(res) ? res : (res && res.data) || [];
         $('modelsBox').innerHTML = renderModelsTable(models);
+        const cfg = JSON.parse($('newapiBox').textContent);
+        cfg.models = models.map(m => m.id || m.display_name).filter(Boolean);
+        $('newapiBox').textContent = JSON.stringify(cfg, null, 2);
       } catch (e) {
         $('modelsBox').textContent = e.message;
       }

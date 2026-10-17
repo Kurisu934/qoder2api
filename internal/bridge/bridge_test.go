@@ -27,10 +27,15 @@ func envelopeBridge(t *testing.T, streamURL string) *Bridge {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	client := NewBearerClient(sess)
+	slot := NewSlot("default", "default", account.RegionCN, sess, client)
+	slot.catalog = []QoderModel{{Key: "auto", DisplayName: "Auto", Enable: true, IsDefault: true}}
+	slot.catalogAt = time.Now()
 	return &Bridge{
-		sess:   sess,
-		client: NewBearerClient(sess),
-		region: account.RegionCN,
+		sess:       sess,
+		client:     client,
+		region:     account.RegionCN,
+		singleSlot: slot,
 		templateBase: map[string]interface{}{
 			"model_config": map[string]interface{}{"key": "auto"},
 			"messages":     []interface{}{},
@@ -142,7 +147,11 @@ func TestCallQoderEnvelopeRetrySucceeds(t *testing.T) {
 	var got []string
 	err := envelopeBridge(t, srv.URL).CallQoderWithOpts(
 		context.Background(), "codex", testMessages(), "auto", nil, CallOpts{},
-		func(d Delta) { got = append(got, d.Content) })
+		func(d Delta) {
+			if d.Content != "" {
+				got = append(got, d.Content)
+			}
+		})
 	if err != nil {
 		t.Fatalf("CallQoderWithOpts: %v", err)
 	}
@@ -273,7 +282,11 @@ func TestCallQoderEnvelopeRetryWhenUpstreamKeepsStreamOpen(t *testing.T) {
 	var got []string
 	err := envelopeBridge(t, srv.URL).CallQoderWithOpts(
 		ctx, "codex", testMessages(), "auto", nil, CallOpts{},
-		func(d Delta) { got = append(got, d.Content) })
+		func(d Delta) {
+			if d.Content != "" {
+				got = append(got, d.Content)
+			}
+		})
 	if err != nil {
 		t.Fatalf("CallQoderWithOpts: %v (upstream hits=%d, want reopen)", err, atomic.LoadInt32(&hits))
 	}

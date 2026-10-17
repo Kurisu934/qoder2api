@@ -6,3 +6,16 @@ qoder2api
 webconsole/index.html.bak
 webconsole/index.html.bak2
 scripts/capture/
+.env
+.env.*
+!.env.example
+settings.json
+accounts/
+secrets/
+logs/
+*.token
+pool_state_*.json
+qoder2api_data/
+.qoder2api*/
+captures*/
+tap-*/

@@ -17,15 +17,17 @@ import (
 )
 
 type QoderModel struct {
-	Key             string  `json:"id"`
-	DisplayName     string  `json:"display_name"`
-	Enable          bool    `json:"enable"`
-	IsDefault       bool    `json:"is_default"`
-	IsReasoning     bool    `json:"is_reasoning,omitempty"`
-	ContextWindow   int     `json:"context_window,omitempty"`
-	MaxOutputTokens int     `json:"max_output_tokens,omitempty"`
-	MaxInputTokens  int     `json:"max_input_tokens,omitempty"`
-	PriceFactor     float64 `json:"price_factor,omitempty"`
+	ID                string  `json:"id"`
+	DisplayName       string  `json:"display_name"`
+	Enable            bool    `json:"enable"`
+	IsDefault         bool    `json:"is_default"`
+	IsReasoning       bool    `json:"is_reasoning"`
+	SupportsReasoning bool    `json:"supports_reasoning"`
+	DefaultReasoning  bool    `json:"default_reasoning"`
+	ContextWindow     int     `json:"context_window,omitempty"`
+	MaxOutputTokens   int     `json:"max_output_tokens,omitempty"`
+	MaxInputTokens    int     `json:"max_input_tokens,omitempty"`
+	PriceFactor       float64 `json:"price_factor,omitempty"`
 }
 
 type Service struct {
@@ -455,15 +457,17 @@ func (s *Service) ListQoderModels() ([]QoderModel, error) {
 	out := make([]QoderModel, len(models))
 	for i, m := range models {
 		out[i] = QoderModel{
-			Key:             m.Key,
-			DisplayName:     m.DisplayName,
-			Enable:          m.Enable,
-			IsDefault:       m.IsDefault,
-			IsReasoning:     m.IsReasoning,
-			MaxInputTokens:  m.MaxInputTokens,
-			PriceFactor:     m.PriceFactor,
-			ContextWindow:   m.ContextWindow,
-			MaxOutputTokens: m.MaxOutputTokens,
+			ID:                m.DisplayName,
+			DisplayName:       m.DisplayName,
+			Enable:            m.Enable,
+			IsDefault:         m.IsDefault,
+			IsReasoning:       m.SupportsReasoning,
+			SupportsReasoning: m.SupportsReasoning,
+			DefaultReasoning:  m.IsReasoning,
+			MaxInputTokens:    m.MaxInputTokens,
+			PriceFactor:       m.PriceFactor,
+			ContextWindow:     m.ContextWindow,
+			MaxOutputTokens:   m.MaxOutputTokens,
 		}
 	}
 	return out, nil

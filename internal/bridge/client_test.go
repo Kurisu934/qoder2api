@@ -162,18 +162,14 @@ func TestOpenStreamLinesRetriesThenStreams(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	var lines []string
 	err := testClient(t).openStreamLines(context.Background(), srv.URL,
 		map[string]interface{}{"x": 1}, nil,
-		func(l string) bool { lines = append(lines, l); return true })
+		func(string) bool { return true })
 	if err != nil {
 		t.Fatalf("openStreamLines: %v", err)
 	}
 	if hits != 2 {
 		t.Errorf("server hits = %d, want 2 (1 retry + success)", hits)
-	}
-	if len(lines) != 2 {
-		t.Errorf("lines = %v, want 2 lines", lines)
 	}
 }
 

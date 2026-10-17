@@ -6,6 +6,20 @@
 
 本项目基于 [wangtufly/QCCG](https://github.com/wangtufly/QCCG) **二次开发**，抽取 Bridge / 账号 / 签名核心逻辑，重做成可服务器部署的精简版本。
 
+本 Fork：[Kurisu934/qoder2api](https://github.com/Kurisu934/qoder2api)，基于 [Zhengyuuuui/qoder2api](https://github.com/Zhengyuuuui/qoder2api)。
+
+## Fork 更新：v2026.10.18-kimi.1
+
+- **按模型名调用**：`GET /v1/models` 的 `id` 使用实时目录显示名，例如 `Auto`、`Kimi-K3`。三种协议均按完整名称解析（不区分大小写），不再按 GPT/Claude 子串猜测或接受任意内部 key。未知、禁用、同名不同 SKU 的模型返回 400；不会静默换成另一款模型。
+- **K3 思考**：Chat 的 `reasoning_effort`、Responses 的 `reasoning.effort` 和 Claude 的 `thinking.type`（`enabled` / `adaptive` / `disabled`）、`output_config.effort` 转为原生 `parameters.reasoning_effort`。未指定 effort 的 enabled/adaptive 使用 `high`，disabled 优先映射为 `none`；`minimal` 映射为 `low`，`xhigh` 与 `max` 保持原值。`thinking.budget_tokens` 不对应已确认的原生预算字段，不能保证逐 token 预算；需要强度控制时使用 effort。
+- **能力与默认模式分离**：Kimi-K3 公开 `supports_reasoning=true`，但保留目录的 `default_reasoning=false`，原生 `model_config.is_reasoning` 不被客户端开关覆盖。已观察到可工作的 K3 请求使用该 false 值加独立 `reasoning_effort`。实际收到的思考内容不再在转换时丢弃。
+- **输出与上下文**：转发 Responses `max_output_tokens`、Chat `max_completion_tokens` / `max_tokens` 和 Claude `max_tokens`；按所选模型目录元数据设置上下文，不继承 Auto 的较小容量。目录未给出的限制不编造。
+- **无状态 Responses**：流式与非流式共享聚合，支持文本/图片、developer/instructions、函数工具及其历史回传、并行调用参数分片、reasoning summary 和实际 usage（含缓存/思考 token 明细）。SSE 提供单调序号及 item/part/delta/done 生命周期，终态包含完整 output；没有 usage 时返回 null。
+- **Responses 真实终态**：有原生终止信号才完成；达到长度上限返回 incomplete。裸 EOF、错误、取消、缺失工具标识不会伪报 completed；仅有 `event: finish` 头还不算完整 SSE 事件，必须读完其数据和分隔行。`previous_response_id` / conversation、`store=true`、`background=true`、非函数工具及加密 reasoning 历史明确返回 400；调用方须携带完整历史。
+- **验证边界**：现有 bridge 测试及 race-enabled 本地合成上游冒烟通过，覆盖上述协议与签名请求体、分片工具历史、终态和取消；未调用真实模型，不能据此宣称已修复上游 K3 的短答/提前停止。
+
+显式别名仍可配置为 `model_mappings[agent][客户端别名] = 目录显示名或内部 key`，但不会作为额外公共模型条目发布。旧的扁平 `model_mapping` 已移除；普通接入无需配置任何映射。账号目录缓存按账号/区域共用，保持现有 30 分钟 TTL、重试次数与冷却策略；不修改 prompt cache marker。
+
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-见原项目-blue)](https://github.com/wangtufly/QCCG/blob/main/LICENSE)
 
@@ -561,7 +575,7 @@ curl -H "x-api-key: qccg" http://127.0.0.1:8963/v1/models
 |------|-----|
 | Base URL (OpenAI) | `http://127.0.0.1:8963/v1` |
 | API Key | `qccg`（可在控制台修改） |
-| 推荐模型 | `auto` |
+| 推荐模型 | `Auto` 或实时列表中的 `Kimi-K3` |
 
 控制台 **「NewAPI / 中转站接入」** 区域可复制完整配置。
 
@@ -572,7 +586,7 @@ curl -H "x-api-key: qccg" http://127.0.0.1:8963/v1/models
    - 类型：`OpenAI`
    - Base URL：`http://<host>:8963/v1`
    - Key：控制台中的密钥  
-3. 模型填 Qoder 侧 ID，例如：`auto`、`qmodel_38max`、`qfmodel`、`gmodel`、`dmodel`、`kmodel_latest` 等  
+3. 从 `GET /v1/models` 复制 `id`，例如 `Auto`、`Kimi-K3`；控制台生成的配置也使用这些名称，不填写 `kmodel_latest` 等内部 key。
 
 ### 接入 OpenCode
 
@@ -590,13 +604,12 @@ curl -H "x-api-key: qccg" http://127.0.0.1:8963/v1/models
         "apiKey": "qccg"
       },
       "models": {
-        "auto": { "name": "Qoder Auto" },
-        "ultimate": { "name": "Ultimate" },
-        "qmodel_latest": { "name": "Qwen Max" }
+        "Auto": { "name": "Auto" },
+        "Kimi-K3": { "name": "Kimi-K3" }
       }
     }
   },
-  "model": "qoder2api/auto"
+  "model": "qoder2api/Kimi-K3"
 }
 ```
 
@@ -606,7 +619,7 @@ curl -H "x-api-key: qccg" http://127.0.0.1:8963/v1/models
 # 示例：环境变量方式（也可写 ~/.claude/settings.json）
 export ANTHROPIC_BASE_URL="http://127.0.0.1:8963"
 export ANTHROPIC_AUTH_TOKEN="qccg"
-export ANTHROPIC_MODEL="auto"
+export ANTHROPIC_MODEL="Kimi-K3"
 claude
 ```
 
@@ -616,7 +629,16 @@ claude
 curl http://127.0.0.1:8963/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer qccg" \
-  -d '{"model":"auto","messages":[{"role":"user","content":"你好"}]}'
+  -d '{"model":"Kimi-K3","reasoning_effort":"max","max_completion_tokens":65536,"messages":[{"role":"user","content":"你好"}]}'
+```
+
+Responses 示例（无状态，不保存历史；示例调用会产生真实推理费用）：
+
+```bash
+curl http://127.0.0.1:8963/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $QODER2API_SK" \
+  -d '{"model":"Kimi-K3","input":"你好","store":false,"stream":true,"reasoning":{"effort":"max"},"max_output_tokens":65536}'
 ```
 
 ---

@@ -244,7 +244,7 @@ func connectionInfo() map[string]interface{} {
 			"type":     "openai",
 			"base_url": base + "/v1",
 			"api_key":  token,
-			"model":    "auto",
+			"model":    "Auto",
 		},
 	}
 }

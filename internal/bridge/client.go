@@ -274,13 +274,10 @@ func (c *BearerClient) openStreamLines(ctx context.Context, fullURL string, json
 				logger.Debug("stream read complete")
 				return err
 			case line := <-lineCh:
-				if line != "" {
-					// onLine 返回 false：消费方已置位 upstreamErr（信封错误帧），
-					// 立即停止读取，避免上游不关流时请求挂起；
-					// 错误由 CallQoderWithOpts 的 emitted 闸门 + isRetryableStreamError 完成重开
-					if !onLine(line) {
-						return nil
-					}
+				// Preserve blank lines: they delimit native finish events. Errors
+				// still stop reading immediately, even if the upstream keeps streaming.
+				if !onLine(line) {
+					return nil
 				}
 			}
 		}

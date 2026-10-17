@@ -4,97 +4,102 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"qoder2api/internal/cosy"
-
-	"qoder2api/logger"
 )
 
 type Delta struct {
-	Role         string
-	Content      string
-	Reasoning    string // 上游推理过程（reasoning_content）
-	ToolCalls    []interface{}
-	InputTokens  int
-	OutputTokens int
-	Err          error // 上游返回业务错误时非 nil
+	Role            string
+	Content         string
+	Reasoning       string
+	ToolCalls       []interface{}
+	InputTokens     int
+	OutputTokens    int
+	CachedTokens    int
+	ReasoningTokens int
+	HasUsage        bool
+	FinishReason    string
+	Done            bool
+	Err             error
+}
+
+func (d Delta) hasPayload() bool {
+	return d.Role != "" || d.Content != "" || d.Reasoning != "" || d.ToolCalls != nil || d.HasUsage || d.InputTokens != 0 || d.OutputTokens != 0 || d.Err != nil
 }
 
 func (d Delta) isEmpty() bool {
-	return d.Role == "" && d.Content == "" && d.Reasoning == "" && d.ToolCalls == nil && d.InputTokens == 0 && d.OutputTokens == 0 && d.Err == nil
+	return !d.hasPayload() && d.FinishReason == "" && !d.Done
 }
 
 func ExtractDelta(dataLine string) Delta {
+	if strings.TrimSpace(dataLine) == "[DONE]" {
+		return Delta{Done: true}
+	}
 	var wrapper map[string]interface{}
 	if err := json.Unmarshal([]byte(dataLine), &wrapper); err != nil {
-		logger.Debug("[delta] unmarshal wrapper failed: %v, raw=%s", err, dataLine)
-		return Delta{}
+		return Delta{Err: fmt.Errorf("malformed upstream JSON frame")}
 	}
-	// ---- 信封状态检查（第 3 步，hub iter_inner_sse 形态） ----
-	// 上游帧：data:{"headers":{...},"body":"<内层 chunk>","statusCodeValue":200}
-	// 关键形态：上游 HTTP200 建流后，把 provider 故障包在信封里投递
-	// statusCodeValue=418/5xx（access log 记 200 而业务错的根因）。
-	// 与内层业务 code（body 里的 {"code":"115"}）严格区分：信封错误带真实
-	// HTTP 状态，可参与瞬时重试判定；重开闸门在 CallQoderWithOpts。
 	if raw, ok := wrapper["statusCodeValue"]; ok {
 		if status := toEnvelopeStatus(raw); status != 200 {
-			ue := NewUpstreamError(status, envelopeDetail(wrapper))
-			logger.Error("[delta] envelope statusCodeValue=%v -> %s", raw, ue.Message)
-			return Delta{Err: ue}
+			return Delta{Err: NewUpstreamError(status, envelopeDetail(wrapper))}
 		}
 	}
-	inner, _ := wrapper["body"].(string)
-	if inner == "" {
-		logger.Debug("[delta] no body field, keys=%v, raw=%s", mapKeys(wrapper), dataLine)
-		return Delta{}
+	inner := wrapper
+	if body, exists := wrapper["body"]; exists {
+		switch value := body.(type) {
+		case string:
+			if strings.TrimSpace(value) == "[DONE]" {
+				return Delta{Done: true}
+			}
+			if value == "" {
+				return Delta{}
+			}
+			inner = nil
+			if err := json.Unmarshal([]byte(value), &inner); err != nil {
+				return Delta{Err: fmt.Errorf("malformed upstream chunk JSON")}
+			}
+		case map[string]interface{}:
+			inner = value
+		default:
+			return Delta{Err: fmt.Errorf("invalid upstream chunk body")}
+		}
 	}
-	var innerJSON map[string]interface{}
-	if err := json.Unmarshal([]byte(inner), &innerJSON); err != nil {
-		logger.Debug("[delta] unmarshal inner failed: %v", err)
-		return Delta{}
+	if code, exists := inner["code"]; exists && code != nil && fmt.Sprint(code) != "" && fmt.Sprint(code) != "0" {
+		return Delta{Err: NewStreamBusinessError(fmt.Sprintf("upstream error code=%v: %v", code, inner["message"]))}
 	}
-	// 先捕获顶层 usage（上游可能在最后一个 chunk 中与 choices 一起返回），
-	// 不提前 return：同帧若还带 choices 内容，合并进同一个 Delta，避免内容丢失
-	var usageIn, usageOut int
-	if usage, ok := innerJSON["usage"].(map[string]interface{}); ok {
-		usageIn = int(cosy.FloatVal(usage, "prompt_tokens"))
-		usageOut = int(cosy.FloatVal(usage, "completion_tokens"))
+	if value, exists := inner["error"]; exists && value != nil {
+		return Delta{Err: NewStreamBusinessError(fmt.Sprintf("upstream error: %v", value))}
 	}
-	choices, _ := innerJSON["choices"].([]interface{})
-	for _, ch := range choices {
-		chMap, _ := ch.(map[string]interface{})
-		delta, _ := chMap["delta"].(map[string]interface{})
-		if delta == nil {
+	var result Delta
+	if usage, ok := inner["usage"].(map[string]interface{}); ok {
+		result.HasUsage = true
+		result.InputTokens = int(cosy.FloatVal(usage, "prompt_tokens"))
+		result.OutputTokens = int(cosy.FloatVal(usage, "completion_tokens"))
+		if details, ok := usage["prompt_tokens_details"].(map[string]interface{}); ok {
+			result.CachedTokens = int(cosy.FloatVal(details, "cached_tokens"))
+		}
+		if details, ok := usage["completion_tokens_details"].(map[string]interface{}); ok {
+			result.ReasoningTokens = int(cosy.FloatVal(details, "reasoning_tokens"))
+		}
+	}
+	choices, _ := inner["choices"].([]interface{})
+	for _, choice := range choices {
+		entry, _ := choice.(map[string]interface{})
+		if reason, ok := entry["finish_reason"].(string); ok && reason != "" {
+			result.FinishReason = reason
+		}
+		fields, _ := entry["delta"].(map[string]interface{})
+		if fields == nil {
 			continue
 		}
-		role, _ := delta["role"].(string)
-		content, _ := delta["content"].(string)
-		reasoning, _ := delta["reasoning_content"].(string)
-		var toolCalls []interface{}
-		if tc, ok := delta["tool_calls"].([]interface{}); ok && len(tc) > 0 {
-			toolCalls = tc
-		}
-		if role != "" || content != "" || reasoning != "" || toolCalls != nil {
-			return Delta{Role: role, Content: content, Reasoning: reasoning, ToolCalls: toolCalls,
-				InputTokens: usageIn, OutputTokens: usageOut}
-		}
+		result.Role, _ = fields["role"].(string)
+		result.Content, _ = fields["content"].(string)
+		result.Reasoning, _ = fields["reasoning_content"].(string)
+		result.ToolCalls, _ = fields["tool_calls"].([]interface{})
+		break
 	}
-	// 上游业务错误：{"code":"115","message":"..."}
-	// 流内业务错误（HTTP 200 帧内）：非内容审核不做瞬时重试指引，
-	// 内容审核单独映射为 content_policy_rejected。
-	// 注意：业务错误检查仍先于 usage-only 返回，错误帧不因带 usage 被误判为正常帧。
-	if code, ok := innerJSON["code"].(string); ok && code != "" && code != "0" {
-		msg, _ := innerJSON["message"].(string)
-		err := NewStreamBusinessError(fmt.Sprintf("upstream error code=%s: %s", code, msg))
-		logger.Error("[delta] %v", err)
-		return Delta{Err: err}
-	}
-	// choices 与业务 code 均未命中且 usage > 0：维持返回 usage-only Delta（行为同修复前）
-	if usageIn > 0 || usageOut > 0 {
-		return Delta{InputTokens: usageIn, OutputTokens: usageOut}
-	}
-	logger.Debug("[delta] no valid choices found, inner=%s", inner)
-	return Delta{}
+	return result
 }
 
 func truncate(s string, max int) string {

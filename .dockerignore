@@ -9,3 +9,15 @@ README.md
 scripts/
 cmd/
 *_test.go
+.env
+.env.*
+settings.json
+accounts/
+secrets/
+logs/
+*.token
+pool_state_*.json
+qoder2api_data/
+.qoder2api*/
+captures*/
+tap-*/
