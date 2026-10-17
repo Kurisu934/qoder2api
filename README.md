@@ -8,6 +8,12 @@
 
 本 Fork：[Kurisu934/qoder2api](https://github.com/Kurisu934/qoder2api)，基于 [Zhengyuuuui/qoder2api](https://github.com/Zhengyuuuui/qoder2api)。
 
+## Fork 修正：v2026.10.18-kimi.2
+
+- 修复上下文档位解析错误：Kimi-K3 的原始目录顶层是 `max_input_tokens: 180000`，但 `context_config` 实际提供 `200K`（默认）、`400K`、`1M`。此前优先保留顶层值，错误地把默认输入值当成模型最大上下文。
+- 现在按每个模型自身目录选择最大的已启用档位，K3 的公开 `context_window` / `max_input_tokens` 及原生请求的 `model_config.max_input_tokens` / `parameters.context_length` 均为 **1,000,000**；不是给所有模型硬编码 1M。禁用档位不参与选择，没有可用档位才保留顶层元数据。
+- 验证使用只读原生目录和隔离上游：修复前公开值及签名请求体均为 180000，修复后均为 1000000；另覆盖最大档位禁用、扁平配置和无档位回退。现有 bridge 测试及 race-enabled 冒烟通过；没有发送真实推理请求。
+
 ## Fork 更新：v2026.10.18-kimi.1
 
 - **按模型名调用**：`GET /v1/models` 的 `id` 使用实时目录显示名，例如 `Auto`、`Kimi-K3`。三种协议均按完整名称解析（不区分大小写），不再按 GPT/Claude 子串猜测或接受任意内部 key。未知、禁用、同名不同 SKU 的模型返回 400；不会静默换成另一款模型。

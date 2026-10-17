@@ -225,8 +225,9 @@ func extractModels(rawList []interface{}) []QoderModel {
 			if model.ContextWindow == 0 {
 				model.ContextWindow = positiveModelInt(contextConfig, "token_count", "context_window")
 			}
-			if model.MaxInputTokens == 0 {
-				model.MaxInputTokens = positiveModelInt(contextConfig, "max_input_tokens")
+			// The root limit belongs to the default context tier, not the SKU maximum.
+			if capacity := positiveModelInt(contextConfig, "max_input_tokens", "token_count", "context_window"); capacity > model.MaxInputTokens {
+				model.MaxInputTokens = capacity
 			}
 			if model.MaxOutputTokens == 0 {
 				model.MaxOutputTokens = positiveModelInt(contextConfig, "max_output_tokens")

@@ -228,29 +228,24 @@ func modelContextConfig(raw map[string]interface{}) map[string]interface{} {
 	if !ok {
 		return nil
 	}
+	if enabled, present := configs["enable"].(bool); present && !enabled {
+		return nil
+	}
 	if positiveModelInt(configs, "token_count", "context_window", "max_input_tokens") > 0 {
 		return configs
 	}
-	keys := make([]string, 0, len(configs))
-	for key := range configs {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	var fallback map[string]interface{}
-	for _, key := range keys {
-		config, _ := configs[key].(map[string]interface{})
+	var selected map[string]interface{}
+	largest := 0
+	selectedKey := ""
+	for key, rawConfig := range configs {
+		config, _ := rawConfig.(map[string]interface{})
 		if enabled, present := config["enable"].(bool); present && !enabled {
 			continue
 		}
-		if positiveModelInt(config, "token_count", "context_window", "max_input_tokens") == 0 {
-			continue
-		}
-		if isDefault, _ := config["is_default"].(bool); isDefault {
-			return config
-		}
-		if fallback == nil {
-			fallback = config
+		capacity := positiveModelInt(config, "token_count", "context_window", "max_input_tokens")
+		if capacity > largest || capacity > 0 && capacity == largest && key < selectedKey {
+			selected, largest, selectedKey = config, capacity, key
 		}
 	}
-	return fallback
+	return selected
 }
